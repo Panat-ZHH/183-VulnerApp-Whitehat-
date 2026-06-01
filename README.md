@@ -24,89 +24,86 @@ Test-User:
 
 ## Diskussion und Selbstevaluation
 
-### 1. Implementierte Sicherheitsmechanismen
+### 1. Welche Sicherheitsmechanismen wurden implementiert?
 
-**Session-basierte Authentifizierung (Spring Form Login)**
+**Session-basierte Authentifizierung**
 
-Ich habe Spring Securitys Form Login verwendet. Nach dem Login bekommt der Browser ein `JSESSIONID`-Cookie, das bei jedem Request automatisch mitgeschickt wird. Der Server weiss damit, welcher User die Anfrage stellt. Das ist sicherer als Basic Auth, weil das Passwort nur einmal beim Login übertragen wird und danach nicht mehr. Die Session läuft ab oder wird beim Logout gelöscht.
+Ich habe Spring Securitys Form Login eingebaut. Nach dem Login kriegt der Browser ein `JSESSIONID`-Cookie, das er automatisch bei jedem Request mitschickt. Der Server weiss damit wer die Anfrage stellt. Das Passwort wird nur einmal beim Login übertragen und danach nicht mehr. Beim Logout wird die Session serverseitig gelöscht.
 
 **Passwort-Hashing mit BCrypt**
 
-Passwörter werden nie im Klartext in der Datenbank gespeichert. `BCryptPasswordEncoder` hashst das Passwort vor dem Speichern. BCrypt hat absichtlich einen langsamen Algorithmus, was Brute-Force-Angriffe auf eine gestohlene Datenbank erschwert. Zusätzlich gibt es Passwortregeln mit Hibernate Validator: min. 12 Zeichen, mindestens ein Grossbuchstabe, ein Kleinbuchstabe, eine Ziffer und ein Sonderzeichen.
+Passwörter werden nie im Klartext in der Datenbank gespeichert, sondern mit `BCryptPasswordEncoder` gehasht. BCrypt ist absichtlich langsam, was Brute-Force auf gestohlene Datenbanken erschwert. Ausserdem gibt es Passwortregeln via Hibernate Validator: mindestens 12 Zeichen, Gross-/Kleinbuchstaben, eine Ziffer und ein Sonderzeichen.
 
 **CSRF-Schutz (Double-Submit Cookie Pattern)**
 
-Ich verwende `CookieCsrfTokenRepository.withHttpOnlyFalse()`. Spring setzt beim ersten Request ein `XSRF-TOKEN`-Cookie, das JavaScript lesen kann (nicht httpOnly). Das Frontend liest diesen Cookie-Wert und schickt ihn als `X-XSRF-TOKEN`-Header bei jedem State-ändernden Request (POST, PUT, DELETE) mit.
+Hier verwende ich `CookieCsrfTokenRepository.withHttpOnlyFalse()`. Spring setzt dabei ein `XSRF-TOKEN`-Cookie, das JavaScript lesen kann. Das Frontend liest diesen Wert und schickt ihn als `X-XSRF-TOKEN`-Header bei jedem POST mit. Spring prüft dann ob Header == Cookie-Wert.
 
-Warum das funktioniert: Spring validiert, dass der Wert im Header gleich dem Wert im Cookie ist. Ein Angreifer von einer fremden Domain kann zwar einen Cross-Site-Request auslösen, aber er kann den Cookie nicht lesen (Same-Origin Policy des Browsers) und daher den Header nicht richtig setzen. Ohne korrekten Header lehnt Spring den Request mit HTTP 403 ab.
+Das funktioniert weil ein Angreifer von einer anderen Domain den Cookie nicht lesen kann (Same-Origin Policy). Er kann zwar einen Cross-Site-Request schicken, aber ohne den richtigen Header kommt HTTP 403 zurück.
 
-**RBAC (Role-Based Access Control)**
+**RBAC**
 
-Es gibt zwei Rollen: `ROLE_USER` und `ROLE_ADMIN`. Normale User können Blogs lesen und schreiben sowie ihr eigenes Profil abrufen (`/api/user/whoami`). Admin-Endpoints (`/api/admin/**`) sind nur für Admins zugänglich – normale User bekommen HTTP 403. Anonyme User bekommen für geschützte API-Endpunkte HTTP 401.
+Es gibt `ROLE_USER` und `ROLE_ADMIN`. Normale User können Blogs lesen und schreiben sowie ihr Profil unter `/api/user/whoami` abrufen. Die Admin-Endpoints (`/api/admin/**`) sind nur für Admins zugänglich. Anonyme User kriegen 401, falsche Rolle gibt 403.
 
 **Input-Validierung mit Hibernate Validator**
 
-Alle Eingaben werden validiert:
-- `BlogEntity`: Titel und Body dürfen nicht leer sein, Titel max. 200 Zeichen, Body max. 10'000 Zeichen.
-- `UserEntity`: Username min. 3, max. 50 Zeichen; Fullname max. 100 Zeichen.
-- `CreateUserRequest`: Passwort muss eine Regex-Regel erfüllen.
-
-Dadurch landen keine ungültigen Daten in der Datenbank und gewisse Injection-Angriffe werden schon auf Validierungsebene verhindert.
+Alle Eingaben werden mit Annotations wie `@NotBlank`, `@Size` und `@Pattern` geprüft. Leere Titel, zu lange Felder oder Passwörter die die Regeln nicht erfüllen werden mit HTTP 400 abgelehnt bevor sie überhaupt in die Datenbank kommen.
 
 **Behobene Sicherheitslücken**
 
-- **SQL Injection**: Spring Data JPA verwendet intern Prepared Statements, wodurch SQL-Injection nicht möglich ist.
-- **XSS (Cross-Site Scripting)**: Im Frontend (`script.js`) wird `textContent` statt `innerHTML` benutzt. Dadurch wird User-Input nie als HTML interpretiert und ausgeführt.
-- **CSRF**: Durch den CookieCsrfTokenRepository abgesichert (siehe oben).
-- **SSRF (Server-Side Request Forgery)**: Der alte `HealthService` hat einen user-kontrollierten `host`-Parameter entgegengenommen und damit eine HTTP-Verbindung aufgebaut. Das wäre ein SSRF-Angriff möglich gewesen. Ich habe den Service entfernt, da er nirgends benutzt wurde und der Actuator-Endpoint schon direkt via `application.yaml` konfiguriert ist.
+- **SQL Injection**: Spring Data JPA benutzt Prepared Statements, dadurch ist SQLi nicht möglich.
+- **XSS**: Im Frontend wird `textContent` statt `innerHTML` verwendet. User-Input wird also nie als HTML geparst und ausgeführt.
+- **CSRF**: Mit dem CookieCsrfTokenRepository abgesichert (s.o.).
+- **SSRF**: Es gab einen `HealthService` der einen `host`-Parameter vom User entgegengenommen und direkt für eine HTTP-Verbindung benutzt hat. Das ist klassisches SSRF. Den habe ich gelöscht, er wurde sowieso nirgends verwendet.
 
 ---
 
 ### 2. Weitere mögliche Sicherheitsmechanismen
 
-**Rate Limiting / Brute-Force-Schutz**
+**Brute-Force-Schutz / Rate Limiting**
 
-Im Moment kann man beliebig viele Login-Versuche machen. Man könnte einen Filter implementieren, der nach z.B. 5 Fehlversuchen den Account für eine gewisse Zeit sperrt oder die IP blockiert. Mit Spring könnte man das mit einem eigenen `AuthenticationFailureHandler` und einem In-Memory-Counter (oder Redis) umsetzen.
+Aktuell kann man unbegrenzt Login-Versuche machen. Sinnvoll wäre ein Filter der nach z.B. 5 Fehlversuchen den Account kurz sperrt oder die IP blockiert. Das könnte man mit einem eigenen `AuthenticationCountingHandler` umsetzen, der Fehlversuche pro IP zählt.
 
-**Security HTTP-Headers (CSP, etc.)**
+**Content Security Policy (CSP)**
 
-Spring Security setzt automatisch einige Security-Header (`X-Content-Type-Options`, `X-Frame-Options`, etc.). Aber `Content-Security-Policy` (CSP) müsste man selbst konfigurieren. Ein striktes CSP würde XSS-Angriffe weiter einschränken, z.B. indem man Inline-Scripts verbietet und nur eigene Quellen erlaubt.
+Spring Security setzt zwar einige Security-Header automatisch, aber CSP muss man selbst konfigurieren. Mit einem strikten CSP kann man Inline-Scripts komplett verbieten, was XSS nochmals deutlich einschränkt.
 
 **HTTPS erzwingen**
 
-In Production sollte man nur HTTPS erlauben. Spring Security kann HTTP-Requests automatisch auf HTTPS weiterleiten. Ausserdem sollte das Session-Cookie `Secure`-Flag haben, damit es nur über HTTPS gesendet wird.
+In Production sollte nur noch HTTPS erlaubt sein. Spring Security kann HTTP-Anfragen automatisch auf HTTPS umleiten. Das Session-Cookie sollte ausserdem das `Secure`-Flag bekommen damit es nie über HTTP gesendet wird.
 
-**JWT als Cookie anstelle von JSESSIONID**
+**JWT statt Session-Cookie**
 
-Statt einer Server-seitigen Session könnte man einen JWT Token als httpOnly-Cookie speichern. Vorteil: Der Server muss keine Session-Daten speichern (stateless). Nachteil: Das Invalidieren eines Tokens ist komplizierter.
-
----
-
-### 3. Schwierigkeiten und was ich anders machen würde
-
-Die grösste Schwierigkeit war das CSRF-Token-Handling in den Tests. Mit `WebTestClient` muss man den XSRF-TOKEN-Cookie manuell aus der Response lesen und als Header bei der nächsten Request mitschicken. Das war am Anfang nicht klar, wie das Double-Submit-Cookie-Pattern in Tests funktioniert. Die Hilfsmethode `loginAs()` und `getCsrfToken()` in den Tests mussten mehrmals angepasst werden, bis alles funktioniert hat.
-
-Der `HealthService` war auch ein Problem. Er hat versucht, den BCrypt-Hash des Admin-Passworts direkt in einem Basic-Auth-Header zu verwenden – das hätte sowieso nie funktioniert, weil der Hash kein Klartext-Passwort ist. Ausserdem war der `host`-Parameter eine SSRF-Lücke. Ich habe den Service gelöscht, weil er nirgends verwendet wurde und der Actuator-Health-Endpoint ohne ihn einwandfrei funktioniert.
-
-Was ich anders machen würde: Früher verstehen, wie Spring Securitys Filter-Chain aufgebaut ist. Die Reihenfolge der Filter und wo genau die CSRF-Validierung stattfindet, war anfangs verwirrend.
+Alternativ könnte man statt dem `JSESSIONID`-Cookie einen JWT als httpOnly-Cookie speichern. Der Server müsste dann keine Session-Daten mehr halten (stateless). Nachteil ist dass man Tokens nicht einfach invalidieren kann wenn zum Beispiel ein User gesperrt wird.
 
 ---
 
-### 4. Aufwand und Ertrag von Sicherheitsmassnahmen
+### 3. Schwierigkeiten und Reflexion
 
-Es gibt Massnahmen, die relativ wenig Aufwand kosten aber sehr viel bringen:
+Ich muss ehrlich sein: Ich habe am Anfang nicht wirklich mitgemacht. Die Lektionen zu Spring Security habe ich so halb mitverfolgt und hatte dann gegen Ende einen ziemlich grossen Rückstand. Das Aufholen auf den letzten Drücker war stressig und nicht die beste Idee.
+
+Der grösste Rückschlag war, dass ich viele Konzepte einfach nicht auf Anhieb verstanden habe weil mir der Kontext gefehlt hat. Was genau eine Filter-Chain ist, warum CSRF überhaupt ein Problem ist, wie Sessions funktionieren – das alles musste ich mir dann selbst erarbeiten statt es im Unterricht mitzunehmen. Die Spring Security Dokumentation ist zwar vollständig aber ohne Grundlagenwissen auch nicht einfach zu lesen.
+
+Konkret schwierig war das CSRF-Token-Handling in den Tests. Ich habe nicht gecheckt warum ich erst ein GET machen muss um das XSRF-TOKEN-Cookie zu kriegen, bevor ich einen POST schicken kann. Bis ich das Double-Submit-Cookie-Pattern wirklich verstanden hatte hat das gut eine Stunde gedauert.
+
+Den `HealthService` habe ich auch erst spät analysiert. Der hat den BCrypt-Hash des Admin-Passworts direkt in einem Basic-Auth-Header verwendet, was nie funktioniert hätte weil das kein Klartext-Passwort ist. Und der `host`-Parameter war eine offensichtliche SSRF-Lücke. Habe ihn dann einfach entfernt.
+
+Was ich definitiv anders machen würde: von Anfang an mitmachen. Die Konzepte bauen aufeinander auf. Wenn man bei den Grundlagen nicht dabei war steht man später ziemlich blöd da. Ich habe am Ende viel gelernt, aber es wäre um einiges einfacher gewesen mit einer soliden Basis von Anfang an.
+
+---
+
+### 4. Aufwand vs. Ertrag
 
 | Massnahme | Aufwand | Nutzen |
 |-----------|---------|--------|
-| BCrypt Passwort-Hashing | Gering (1-2 Zeilen Config) | Sehr hoch – schützt alle Passwörter bei einem DB-Leak |
-| CSRF-Schutz | Gering | Hoch – verhindert eine ganze Klasse von Angriffen |
-| Input-Validierung | Gering (Annotations) | Mittel – verhindert ungültige Daten, reduziert Angriffsfläche |
-| HTTPS | Mittel (Zertifikat, Config) | Sehr hoch – schützt alle Daten in der Übertragung |
-| Rate Limiting | Mittel | Mittel – erschwert Brute-Force |
-| OAuth2/OIDC | Hoch | Hoch – delegiert Auth an bewährten Provider |
+| BCrypt Hashing | Sehr gering | Sehr hoch – ohne das sind alle Passwörter bei einem DB-Leak verbrannt |
+| CSRF-Schutz | Gering | Hoch – verhindert eine ganze Angriffskategorie |
+| Input-Validierung | Gering (Annotations) | Mittel – verhindert Müll in der DB, reduziert Angriffsfläche |
+| HTTPS | Mittel | Sehr hoch |
+| Rate Limiting | Mittel | Mittel |
+| OAuth2 / OIDC | Hoch | Hoch |
 
-Meine Erfahrung aus diesem Projekt: Die einfachen Sachen (BCrypt, CSRF, Validation) sollte man immer machen, egal wie klein das Projekt ist. Der Aufwand ist minimal und der Schutz ist enorm. Ein Passwort-Leak ohne Hashing kann einen Betrieb in ernsthafte Probleme bringen.
+Das wichtigste was ich aus diesem Projekt mitgenommen habe: BCrypt und CSRF kosten fast nichts, schützen aber wirklich. Es gibt keinen einzigen Grund diese Sachen nicht zu machen. Wenn eine Datenbank mit Klartext-Passwörtern leakt ist der Schaden riesig. Mit BCrypt ist er zumindest begrenzt.
 
-Die aufwändigeren Sachen wie OAuth2 lohnen sich, wenn man sowieso eine externe Authentifizierungslösung braucht oder wenn sehr sensible Daten verarbeitet werden. Im Betrieb macht es keinen Sinn, alles selbst zu implementieren – man sollte bewährte Libraries und Standards verwenden, weil man selbst immer Fehler macht.
+Die aufwändigeren Sachen wie OAuth2 lohnen sich je nach Projekt und Risiko. Im Betrieb würde ich Auth nicht selbst implementieren sondern auf einen etablierten Identity Provider wie Keycloak setzen, einfach weil die das schon richtig gemacht haben.
 
-Ein Sicherheitsvorfall kostet ein Unternehmen typischerweise viel mehr als die Implementierung dieser Massnahmen. Deshalb ist der Ertrag fast immer grösser als der Aufwand.
+Was ich generell gelernt habe: Sicherheit nachträglich einbauen ist immer teurer als sie von Anfang an einzuplanen. Das habe ich in diesem Projekt selbst gemerkt, weil ich zuerst verstehen musste was die ursprüngliche App alles falsch macht, bevor ich anfangen konnte zu fixen.
